@@ -1,0 +1,56 @@
+name: Security Scans
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Gitleaks
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        with:
+          args: detect --report-format json --report-path reports/gitleaks.json
+
+      # Trivy (scan image + fs)
+      - name: Build Docker image
+        run: docker build -t devsecure-api:local .
+
+      - name: Run Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: image
+          image-ref: devsecure-api:local
+          format: json
+          output: reports/trivy-image.json
+
+      # Snyk (nécessite ton token GitHub secret SNYK_TOKEN)
+      - name: Run Snyk Open Source
+        uses: snyk/actions/python@master
+        with:
+          command: test --file=requirements.txt --package-manager=pip --json-file-output=reports/snyk-oss.json
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+      - name: Run Snyk Container
+        uses: snyk/actions/docker@master
+        with:
+          image: devsecure-api:local
+          args: --file=Dockerfile --json-file-output=reports/snyk-container.json
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+      # Upload artefacts (rapports JSON)
+      - name: Upload reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: reports/*.json
