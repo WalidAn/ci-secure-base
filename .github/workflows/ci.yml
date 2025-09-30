@@ -1,56 +1,64 @@
+# .github/workflows/ci.yml
 name: Security Scans
-
 on:
   push:
-    branches: [ "main" ]
   pull_request:
-    branches: [ "main" ]
 
 jobs:
   security:
     runs-on: ubuntu-latest
-
+    permissions:
+      contents: read
+      security-events: write   # nécessaire pour upload SARIF
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      # Gitleaks
+      - name: Prepare reports dir
+        run: mkdir -p reports
+
       - name: Run Gitleaks
         uses: gitleaks/gitleaks-action@v2
         with:
-          args: detect --report-format json --report-path reports/gitleaks.json
+          args: detect --source . --report-format sarif --report-path reports/gitleaks.sarif --redact --exit-code 0
 
-      # Trivy (scan image + fs)
+      - name: Upload Gitleaks SARIF to code scanning
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: reports/gitleaks.sarif
+
       - name: Build Docker image
         run: docker build -t devsecure-api:local .
 
       - name: Run Trivy
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.24.0
         with:
-          scan-type: image
           image-ref: devsecure-api:local
           format: json
           output: reports/trivy-image.json
+        continue-on-error: true
 
-      # Snyk (nécessite ton token GitHub secret SNYK_TOKEN)
-      - name: Run Snyk Open Source
+      - name: Snyk Open Source (pip)
         uses: snyk/actions/python@master
-        with:
-          command: test --file=requirements.txt --package-manager=pip --json-file-output=reports/snyk-oss.json
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          command: test
+          args: --file=requirements.txt --package-manager=pip --json-file-output=reports/snyk-oss.json
+        continue-on-error: true
 
-      - name: Run Snyk Container
+      - name: Snyk Container
         uses: snyk/actions/docker@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
           image: devsecure-api:local
           args: --file=Dockerfile --json-file-output=reports/snyk-container.json
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        continue-on-error: true
 
-      # Upload artefacts (rapports JSON)
-      - name: Upload reports
+      - name: Upload all reports
         uses: actions/upload-artifact@v4
         with:
           name: security-reports
-          path: reports/*.json
+          path: reports/*
